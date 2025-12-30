@@ -264,3 +264,9 @@ Made with ❤️ by [Cangsheng Shen](https://github.com/shencangsheng)
 </div>
 
 [![Star History Chart](https://api.star-history.com/svg?repos=shencangsheng/easydb_app&type=date&legend=top-left)](https://www.star-history.com/#shencangsheng/easydb_app&type=date&legend=top-left)
+
+## Docker Compose 初期化
+```
+docker-compose down --volume
+docker-compose up --build
+```
