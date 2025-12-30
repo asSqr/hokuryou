@@ -1,0 +1,21 @@
+version: "3"
+services:
+  db:
+    platform: linux/amd64
+    image: mysql:8.0.34
+    ports:
+      - 13306:3306
+    volumes:
+      - db-store:/var/lib/mysql
+      - ./conf/my.cnf:/etc/mysql/conf.d/my.cnf
+      # ★ ローカルのscriptディレクトリにマウントします
+      - ./mysql:/docker-entrypoint-initdb.d/
+    container_name: my-db
+    environment:
+      - MYSQL_DATABASE=easy_db
+      - MYSQL_USER=easy_db
+      - MYSQL_PASSWORD=pass
+      - MYSQL_ROOT_PASSWORD=pass
+      - TZ="Asia/Tokyo"
+volumes:
+  db-store:
