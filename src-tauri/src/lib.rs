@@ -1,5 +1,5 @@
 use crate::commands::app::restart_app;
-use crate::commands::query::{fetch_card_input, fetch, sql_history, writer};
+use crate::commands::query::{fetch_card_input, insert_hatyu_into_card_input, fetch, sql_history, writer};
 use crate::commands::utils::open_url;
 use crate::utils::db_utils;
 use tauri::Listener;
@@ -29,6 +29,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             fetch_card_input,
+            insert_hatyu_into_card_input,
             fetch,
             open_url,
             restart_app,

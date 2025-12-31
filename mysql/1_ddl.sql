@@ -42,7 +42,7 @@ CREATE TABLE card_input (
   created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '作成日時',
 
   PRIMARY KEY (order_id),
-  KEY idx_card_input_product_due (product_code, due_date)
+  KEY idx_card_input_product_due (due_date)
 ) COMMENT='Card input (calculated result)';
 
 

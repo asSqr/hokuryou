@@ -19,9 +19,7 @@ export default function Notebook() {
           gap: "0px",
         }}
       >
-        <NotebookLeft source={source} setSource={setSource} />
         <NotebookMiddle source={source} />
-        <NotebookRight />
       </div>
     </div>
   );

@@ -187,8 +187,11 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
     translate,
   ]);
 
-  // 使用 useCallback 缓存查询执行函数
-  const executeQuery = useCallback(async () => {
+  const queryWrapper = async (invoke_handler: () => Promise<{
+    header: string[];
+    rows: string[][];
+    query_time: string;
+  }>) => {
     setIsRunning(true);
     setIsLoading(true);
     setData({ header: [], rows: [], query_time: "" });
@@ -202,7 +205,7 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
         header: string[];
         rows: string[][];
         query_time: string;
-      } = await invoke("fetch_card_input", { sql: '', offset: 0, limit: 200 });
+      } = await invoke_handler();
 
       // 检查是否被取消
       if (abortController.signal.aborted) {
@@ -235,6 +238,18 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
       setIsLoading(false);
       abortControllerRef.current = null;
     }
+  }
+
+  const executeInsertHatyuIntoCardInputQuery = useCallback(async () => {
+    await queryWrapper(async () => {
+      return await invoke('insert_hatyu_into_card_input', { sql: '', offset: 0, limit: 200 });
+    });
+  }, [sql, isRunning]);
+
+  const executeFecthCardInputQuery = useCallback(async () => {
+    await queryWrapper(async () => {
+      return await invoke('fetch_card_input', { sql: '', offset: 0, limit: 200 });
+    });
   }, [sql, isRunning]);
 
   // 使用 useCallback 缓存取消查询函数
@@ -357,7 +372,7 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
               isDisabled={sql === ""}
               style={{ backgroundColor: "transparent" }}
               aria-label={isRunning ? "Stop query" : "Run query"}
-              onPress={isRunning ? cancelQuery : executeQuery}
+              onPress={isRunning ? cancelQuery : executeFecthCardInputQuery}
             >
               <FontAwesomeIcon
                 icon={isRunning ? faStop : faPlay}
@@ -402,8 +417,8 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
             justifyContent: "end"
           }}
         >
-          <Button onPress={executeQuery} style={{margin: '15px'}}>カード入力参照</Button>
-          <Button onPress={executeQuery} style={{margin: '15px'}}>カード入力参照</Button>
+          <Button onPress={executeInsertHatyuIntoCardInputQuery} style={{margin: '15px', background: 'yellowgreen'}}>発注インポート</Button>
+          <Button onPress={executeFecthCardInputQuery} style={{margin: '15px'}}>カード入力参照</Button>
         </div>
       </div>
       <div style={{ marginTop: "20px", marginLeft: "50px" }}>

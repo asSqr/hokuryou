@@ -13,6 +13,7 @@ use datafusion::config::CsvOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::prelude::SessionContext;
 use dirs;
+use sqlx::{mysql::MySqlPoolOptions, MySql, Pool};
 use serde::Serialize;
 use std::fs;
 use std::fs::File;
@@ -26,13 +27,6 @@ use datafusion_table_providers::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
-#[derive(Serialize)]
-pub struct FecthCardInputResult {
-    pub header: Vec<String>,
-    pub rows: Vec<Vec<String>>,
-    pub query_time: String,
-}
 
 #[derive(Serialize)]
 pub struct FetchResult {
@@ -74,9 +68,20 @@ impl Dialect {
     }
 }
 
+pub async fn create_sqlx_mysql_pool() -> Result<Pool<MySql>, sqlx::Error> {
+    let conn = "mysql://easy_db:pass@localhost:13306/easy_db";
+    
+    let pool = MySqlPoolOptions::new()
+        .max_connections(10)
+        .connect(conn)
+        .await?;
+
+    Ok(pool)
+}
+
 pub async fn create_mysql_conn(context: &mut SessionContext,
-    table_name: String,
-    table_path: String) -> AppResult<()> {
+    table_names: Vec<String>,
+    table_paths: Vec<String>) -> AppResult<()> {
     let conn = "mysql://easy_db:pass@localhost:13306/easy_db";
     let mysql_params = to_secret_map(HashMap::from([
         ("connection_string".to_string(), conn.to_string()),
@@ -90,12 +95,14 @@ pub async fn create_mysql_conn(context: &mut SessionContext,
     // Used to generate TableProvider instances that can read MySQL table data
     let table_factory = MySQLTableFactory::new(mysql_pool);
 
-    context.register_table(
-        table_name,
-        table_factory
-            .table_provider(TableReference::bare(table_path))
-            .await?,
-    )?;
+    for (table_name, table_path) in table_names.into_iter().zip(table_paths.into_iter()) {
+        context.register_table(
+            table_name,
+            table_factory
+                .table_provider(TableReference::bare(table_path))
+                .await?,
+        )?;
+    }
 
     Ok(())
 }
@@ -128,23 +135,101 @@ pub async fn fetch_sql(context: &mut SessionContext, sql: &String) -> AppResult<
     Ok((header, rows))
 }
 
+pub async fn execute_sql(pool: &Pool<MySql>, sql: &String) -> AppResult<()> {
+    sqlx::query(sql).execute(pool).await.expect("SQL execute failed");
+    
+    Ok(())
+}
+
+#[command]
+pub async fn insert_hatyu_into_card_input(
+    app: AppHandle,
+    sql: String,
+    offset: usize,
+    limit: usize
+) -> AppResult<FetchResult> {
+    run_blocking_async(move || async move {
+        let mut context = get_sql_context();
+        let related_tables = vec![
+            "hatyu".to_string(),
+            "card_input".to_string(),
+            "shipment_history".to_string()
+        ];
+
+        let pool = create_sqlx_mysql_pool().await
+            .expect("invalid mysql pool");
+
+        let start = Utc::now();
+
+        let sql = r#"
+            INSERT INTO card_input (
+                order_id,
+                product_code,
+                order_qty,
+                due_date,
+                provisional_issued,
+                shipped_flg,
+                order_date,
+                created_at
+            )
+            SELECT
+                h.order_no                               AS order_id,
+                h.product_code                           AS product_code,
+
+                /* 出荷残 = 発注数 - 出荷済数量合計 */
+                (h.order_qty - IFNULL(s.shipped_qty, 0)) AS order_qty,
+
+                h.due_date                               AS due_date,
+                FALSE                                    AS provisional_issued,
+                FALSE                                    AS shipped_flg,
+                h.order_created_date                     AS order_date,
+                CURRENT_TIMESTAMP                        AS created_at
+            FROM hatyu h
+            LEFT JOIN (
+                SELECT
+                    sh.order_no,
+                    SUM(sh.qty) AS shipped_qty
+                FROM shipment_history sh
+                GROUP BY sh.order_no
+            ) s
+                ON s.order_no = h.order_no
+            WHERE
+                /* 未完了（出荷残がある）注文のみカード化 */
+                (h.order_qty - IFNULL(s.shipped_qty, 0)) > 0;
+        "#.to_string();
+
+        execute_sql(&pool, &sql).await?;
+
+        Ok(FetchResult {
+            header: Vec::new(),
+            rows: Vec::new(),
+            query_time: time_difference_from_now(start),
+        })
+    }).await
+}
+
+
 #[command]
 pub async fn fetch_card_input(
     app: AppHandle,
     sql: String,
     offset: usize,
     limit: usize
-) -> AppResult<FecthCardInputResult> {
+) -> AppResult<FetchResult> {
     run_blocking_async(move || async move {
         let mut context = get_sql_context();
-        create_mysql_conn(&mut context, "card_input".to_string(), "card_input".to_string()).await?;
+        create_mysql_conn(
+            &mut context,
+            vec!["card_input".to_string()],
+            vec!["card_input".to_string()]
+        ).await?;
 
         let start = Utc::now();
 
         let sql = r#"
             SELECT
                 *
-            FROM 'card_input';
+            FROM card_input;
         "#.to_string();
 
         let future_order_cumulative_sql = r#"
@@ -152,7 +237,8 @@ pub async fn fetch_card_input(
                 product_code,
                 due_date,
                 order_qty
-            FROM card_input
+            FROM card_input c
+            WHERE c.shipped_flg = 0
             ORDER BY due_date;
         "#.to_string();
 
@@ -219,7 +305,7 @@ pub async fn fetch_card_input(
 
         header.push("cumulative_order_qty".to_string());
 
-        Ok(FecthCardInputResult {
+        Ok(FetchResult {
             header,
             rows,
             query_time: time_difference_from_now(start),
