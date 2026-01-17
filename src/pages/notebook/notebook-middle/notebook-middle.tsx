@@ -314,6 +314,7 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
       borderRight: "1px solid rgba(17, 17, 17, 0.15)",
       overflow: "hidden",
       position: "relative" as const,
+      height: "100%",
     }),
     []
   );
@@ -331,7 +332,7 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
     () => ({
       display: "flex",
       justifyContent: "space-between",
-      height: "45%",
+      height: "20%",
       width: "100%",
       overflowY: "auto" as const,
       flex: 1,
@@ -421,7 +422,14 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
           <Button onPress={executeFecthCardInputQuery} style={{margin: '15px'}}>カード入力参照</Button>
         </div>
       </div>
-      <div style={{ marginTop: "20px", marginLeft: "50px" }}>
+      <div style={
+        {
+          marginTop: "20px",
+          marginLeft: "20px",
+          marginRight: "20px",
+          height: "100%"
+        }
+      }>
         <NotebookMiddleBottom
           data={data}
           isLoading={isLoading}

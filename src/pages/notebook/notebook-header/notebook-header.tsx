@@ -39,15 +39,6 @@ function NotebookHeader() {
           <LOGO />
           <p className="font-bold text-inherit">{translate("navbar.title")}</p>
         </NavbarBrand>
-        <NavbarItem>
-          <Input
-            labelPlacement="outside"
-            placeholder={translate("navbar.searchPlaceholder")}
-            startContent={<FontAwesomeIcon icon={faSearch} />}
-            variant="bordered"
-            style={{ width: "600px", textAlign: "left" }}
-          />
-        </NavbarItem>
       </NavbarContent>
 
       <NavbarContent justify="end" style={{ paddingLeft: "10px" }}>

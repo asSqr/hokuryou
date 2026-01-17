@@ -1,8 +1,8 @@
 import { useState } from "react";
 import NotebookHeader from "./notebook-header/notebook-header";
-import NotebookLeft from "./notebook-left/notebook-left";
 import NotebookMiddle from "./notebook-middle/notebook-middle";
-import NotebookRight from "./notebook-right/notebook-right";
+
+
 export default function Notebook() {
   const [source, setSource] = useState<string>("");
 
