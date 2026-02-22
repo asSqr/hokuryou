@@ -8,6 +8,7 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
+  DateValue,
 } from "@heroui/react";
 
 import {
@@ -73,8 +74,8 @@ function ShipByOrderNoModal({ isOpen, onClose }: SettingsModalProps) {
             出荷日
           </label>
           <DateInput
-            value={shipDate}
-            onChange={setShipDate}
+            value={shipDate as DateValue | null}
+            onChange={setShipDate as (value: DateValue | null) => void}
             errorMessage={(value) => {
               if (value.isInvalid) {
                 return "日付を入力してください。";
