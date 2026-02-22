@@ -116,7 +116,7 @@ function DataResult({ data, isLoading }: DataResultProps) {
     return (
       <div
         className="flex items-center justify-center w-full"
-        style={{ height: "calc(40vh - 50px)" }}
+        style={{ height: "calc(60vh - 50px)" }}
       >
         <Spinner label="Loading..." />
       </div>
@@ -125,8 +125,8 @@ function DataResult({ data, isLoading }: DataResultProps) {
 
   if (data.rows.length === 0) {
     return (
-      <div className="w-full">
-        <div style={{ height: "calc(40vh - 50px)" }} className="overflow-auto">
+      <div className="w-full h-full">
+        <div style={{ height: "calc(60vh - 50px)" }} className="overflow-auto">
           <table className="border-collapse" style={{ minWidth: "100%" }}>
             <thead className="bg-default-100">
               <tr className="border-b border-default-200 font-semibold text-sm text-default-600">
@@ -174,7 +174,7 @@ function DataResult({ data, isLoading }: DataResultProps) {
       <div
         ref={parentRef}
         className="overflow-auto"
-        style={{ height: "calc(40vh - 50px)" }}
+        style={{ height: "calc(60vh - 50px)" }}
       >
         <div style={{ width: tableWidth, minWidth: "100%" }}>
           {/* Fixed table header */}

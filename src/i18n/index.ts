@@ -191,7 +191,7 @@ const translations: Record<Language, Translations> = {
       general: "常规设置",
     },
     navbar: {
-      title: "EasyDB",
+      title: "Teikoku Hatchu",
       searchPlaceholder: "搜索数据和保存的文档...",
     },
     notebook: {
@@ -327,7 +327,7 @@ const translations: Record<Language, Translations> = {
       "en-US": "English",
     },
     about: {
-      title: "EasyDB",
+      title: "Teikoku Hatchu",
       version: "版本",
       author: "作者",
       description: "一个简约强大的 SQL 桌面客户端，支持多种文件格式查询",
@@ -377,7 +377,7 @@ const translations: Record<Language, Translations> = {
       general: "General Settings",
     },
     navbar: {
-      title: "EasyDB",
+      title: "Teikoku Hatchu",
       searchPlaceholder: "Search data and saved documents...",
     },
     notebook: {

@@ -4,6 +4,8 @@ use crate::context::schema::AppResult;
 use tokio::task;
 
 pub mod app;
+pub mod model;
+pub mod parse_value;
 pub mod query;
 pub mod utils;
 

@@ -1,4 +1,4 @@
--- hatyu 投入
+-- hatyu 投入（DDLに合わせて / unit_price を固定して amount を算出）
 INSERT INTO hatyu (
   order_no, order_created_date, customer,
   product_code, product_name,
@@ -32,10 +32,10 @@ SELECT
     ELSE 8
   END AS order_qty,
 
-  -- 単価（例：200〜1200）
-  ROUND(200 + RAND()*1000, 2) AS unit_price,
+  -- 単価（200〜1200） ※ここで生成した値を amount にも使う
+  unit_price,
 
-  -- 金額 = 数量 * 単価
+  -- 金額 = 数量 * 単価（unit_price を使って整合）
   ROUND(
     (CASE
       WHEN qty_r < 0.18 THEN 1
@@ -46,11 +46,10 @@ SELECT
       WHEN qty_r < 0.90 THEN 6
       WHEN qty_r < 0.96 THEN 7
       ELSE 8
-    END) * (200 + RAND()*1000)
+    END) * unit_price
   , 2) AS amount,
 
   CONCAT('PO-', 230753000000 + n) AS purchase_order_no,
-
   NOW() AS imported_at
 FROM (
   SELECT
@@ -58,7 +57,8 @@ FROM (
     FLOOR(RAND() * 300) + 1 AS product_no,
     RAND() AS qty_r,
     FLOOR(RAND() * 181) AS due_offset,
-    FLOOR(RAND() * (DATEDIFF('2023-08-31','2023-07-15') + 1)) AS order_offset
+    FLOOR(RAND() * (DATEDIFF('2023-08-31','2023-07-15') + 1)) AS order_offset,
+    ROUND(200 + RAND()*1000, 2) AS unit_price
   FROM (
     SELECT ones.n + tens.n*10 + hundreds.n*100 AS n
     FROM
@@ -85,30 +85,30 @@ ON DUPLICATE KEY UPDATE
   purchase_order_no = VALUES(purchase_order_no),
   imported_at = VALUES(imported_at);
 
--- shipment_history 投入
+-- shipment_history 投入（DDLに合わせて）
 INSERT INTO shipment_history (
   order_no, product_code, product_name,
-  qty, due_date, issue_date,
-  not_guided, printed, created_at
+  order_qty, shipped_qty, unit_price,
+  due_date, issue_date, created_at
 )
 SELECT
   h.order_no,
   h.product_code,
   h.product_name,
 
+  -- 参照用：発注数（hatyu由来）
+  h.order_qty AS order_qty,
+
   -- 出荷数量：1〜発注数（部分出荷あり）
-  GREATEST(1, FLOOR(RAND() * h.order_qty) + 1) AS qty,
+  GREATEST(1, FLOOR(RAND() * h.order_qty) + 1) AS shipped_qty,
+
+  -- 実績単価：基本は受注単価（必要ならここでブレさせてもOK）
+  h.unit_price AS unit_price,
 
   h.due_date,
 
   -- 出庫日：納期の -10〜+10日
   DATE_ADD(h.due_date, INTERVAL (FLOOR(RAND()*21) - 10) DAY) AS issue_date,
-
-  -- 未案内：10%程度
-  (RAND() < 0.10) AS not_guided,
-
-  -- 印刷：60%程度
-  (RAND() < 0.60) AS printed,
 
   NOW() AS created_at
 FROM hatyu h
