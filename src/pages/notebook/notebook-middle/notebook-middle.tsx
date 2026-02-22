@@ -20,6 +20,10 @@ import NotebookMiddleBottom from "./notebook-mddle-bottom";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "@/i18n";
 import { listen } from "@tauri-apps/api/event";
+import SettingsModal from "@/components/common/settings-modal";
+import ShipByProductCodeModal from "@/components/common/ship-by-product-code-modal";
+import ShipByOrderNoModal from "@/components/common/ship-by-order-no-modal";
+import { CalendarDate } from "@internationalized/date";
 
 interface NotebookMiddleProps {
   source: string;
@@ -252,6 +256,32 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
     });
   }, [sql, isRunning]);
 
+  const executeShipByProductCodeQuery = useCallback(async (product_code: string, ship_quantity: number, ship_date: CalendarDate) => {
+    await queryWrapper(async () => {
+      return await invoke('ship_by_product_code', {
+        sql: '',
+        productCode: product_code,
+        shipQuantity: ship_quantity,
+        shipDate: ship_date.toString(),
+        offset: 0,
+        limit: 200
+      });
+    });
+  }, [sql, isRunning]);
+
+  const executeShipByOrderNoQuery = useCallback(async (order_no: number, ship_quantity: number, ship_date: CalendarDate) => {
+    await queryWrapper(async () => {
+      return await invoke('ship_by_order_no', {
+        sql: '',
+        orderNo: order_no,
+        shipQuantity: ship_quantity,
+        shipDate: ship_date.toString(),
+        offset: 0,
+        limit: 200
+      });
+    });
+  }, [sql, isRunning]);
+
   // 使用 useCallback 缓存取消查询函数
   const cancelQuery = useCallback(() => {
     if (abortControllerRef.current) {
@@ -340,6 +370,9 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
     []
   );
 
+  const [inputShipByProductCodeModalOpen, setInputShipByProductCodeModalOpen] = useState<boolean>(false);
+  const [inputShipByOrderNoModalOpen, setInputShipByOrderNoModalOpen] = useState<boolean>(false);
+
   return (
     <div ref={dropAreaRef} style={containerStyle}>
       <div style={headerStyle}>
@@ -419,7 +452,12 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
           }}
         >
           <Button onPress={executeInsertHatyuIntoCardInputQuery} style={{margin: '15px', background: 'yellowgreen'}}>発注インポート</Button>
-          <Button onPress={executeFecthCardInputQuery} style={{margin: '15px'}}>カード入力参照</Button>
+          <Button onPress={executeFecthCardInputQuery} style={{margin: '15px'}}>ORDER 残 (カード入力 出庫残 表示)</Button>
+          <Button onPress={() => setInputShipByProductCodeModalOpen(true)} style={{margin: '15px'}}>出庫(割り当て)</Button>
+          <Button onPress={() => setInputShipByOrderNoModalOpen(true)} style={{margin: '15px'}}>出庫(ORDER)</Button>
+          <Button onPress={() => {}} style={{margin: '15px'}}>出荷履歴全データ</Button>
+          <Button onPress={() => {}} style={{margin: '15px'}}>出荷履歴訂正</Button>
+          <Button onPress={() => {}} style={{margin: '15px'}}>売上集計</Button>
         </div>
       </div>
       <div style={
@@ -437,6 +475,26 @@ function NotebookMiddle({ source }: NotebookMiddleProps) {
           sql={sql}
         />
       </div>
+      <ShipByProductCodeModal 
+        isOpen={inputShipByProductCodeModalOpen}
+        onClose={(productCode: string | null, shipQuantity: number | null, shipDate: CalendarDate | null) => {
+          if (productCode !== null && shipQuantity !== null && shipDate !== null) {
+            executeShipByProductCodeQuery(productCode, shipQuantity, shipDate);
+          }
+
+          setInputShipByProductCodeModalOpen(false);
+        }}
+      />
+      <ShipByOrderNoModal
+        isOpen={inputShipByOrderNoModalOpen}
+        onClose={(orderNo: number | null, shipQuantity: number | null, shipDate: CalendarDate | null) => {
+          if (orderNo !== null && shipQuantity !== null && shipDate !== null) {
+            executeShipByOrderNoQuery(orderNo, shipQuantity, shipDate);
+          }
+
+          setInputShipByOrderNoModalOpen(false)
+        }}
+      />
     </div>
   );
 }

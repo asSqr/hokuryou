@@ -1,3 +1,5 @@
+use crate::commands::model::{Hatyu, OrderNo, OrderQuantity, QuantitySum, ShipmentHistoryByOrderNo};
+use crate::commands::parse_value::{FromRowOwned, RowOwned};
 use crate::commands::{run_blocking, run_blocking_async};
 use crate::context::context::{collect, get_data_frame, get_sql_context, register};
 use crate::context::error::AppError;
@@ -136,10 +138,244 @@ pub async fn fetch_sql(context: &mut SessionContext, sql: &String) -> AppResult<
 }
 
 pub async fn execute_sql(pool: &Pool<MySql>, sql: &String) -> AppResult<()> {
-    sqlx::query(sql).execute(pool).await.expect("SQL execute failed");
+    sqlx::query(sql).execute(pool).await
+        .map_err(|_| AppError::InternalServer {
+            message: format!("sql execution failed")
+        })?;
 
     Ok(())
 }
+
+
+async fn shipment_history_query(
+    context: &mut SessionContext) -> AppResult<HashMap<OrderNo, QuantitySum>> {
+    let sql = r#"
+        SELECT
+            order_no,
+            SUM(shipped_qty) AS quantity_sum
+        FROM shipment_history
+        GROUP BY order_no;
+    "#.to_string();
+
+    let (_, shipment_history_rows) = fetch_sql(context, &sql).await?;
+    let shipment_history_by_order_nos = shipment_history_rows
+        .into_iter()
+        .map(|cells| ShipmentHistoryByOrderNo::from_row(
+            &RowOwned { cells: cells }
+        ))
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let order_no_quantity_sum_map: HashMap<OrderNo, QuantitySum> =
+        shipment_history_by_order_nos.into_iter()
+            .map(|r| (r.order_no, r.quantity_sum))
+            .collect();
+
+    Ok(order_no_quantity_sum_map)
+}
+
+
+async fn fetch_hatyu(context: &mut SessionContext,
+    order_no_quantity_sum_map: &HashMap<OrderNo, QuantitySum>) -> AppResult<Vec<Hatyu>> {
+    let fetch_hatyu_sql = r#"
+        SELECT
+            h.order_no                              AS order_no,
+            h.product_code                          AS product_code,
+            h.product_name                          AS product_name,
+            h.order_qty                             AS order_qty,
+            h.due_date                              AS due_date,
+            h.unit_price                            AS unit_price,
+            h.order_created_date                    AS order_date,
+            CURRENT_TIMESTAMP                       AS created_at
+        FROM hatyu h;
+    "#.to_string();
+
+    let (_, mut hatyu_rows) = fetch_sql(
+        context,
+        &fetch_hatyu_sql
+    ).await?;
+
+    let hatyus = hatyu_rows
+        .into_iter()
+        .map(|cells| Hatyu::from_row(
+            &RowOwned { cells: cells }
+        ))
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let mut shipping_remaining_hatyus = Vec::new();
+
+    for hatyu in hatyus.iter() {
+        // 発注書NO
+        let order_no = &hatyu.order_no;
+
+        // 発注数
+        let order_qty: i32 = i32::try_from(hatyu.order_qty.0)
+            .map_err(|_| AppError::InternalServer {
+                message: format!("invalid order_qty")
+            })?;
+
+        // Nz(数量合計, 0)
+        let quantity_sum: i32 = i32::try_from(
+            order_no_quantity_sum_map
+                .get(&order_no)
+                .cloned()
+                .unwrap_or(QuantitySum(0))
+                .0
+        )
+            .map_err(|_| AppError::InternalServer {
+                message: format!("invalid quantity_sum")
+            })?;
+
+        // 出荷残
+        let remaining_shipping: i32 = order_qty - quantity_sum;
+
+        // 出荷残 > 0 のもののみ対象
+        if remaining_shipping <= 0 {
+            continue;
+        }
+
+        shipping_remaining_hatyus.push(
+            hatyu.clone()
+        );
+    }
+
+    compute_cumulative_order_qty(&mut shipping_remaining_hatyus);
+
+    Ok(shipping_remaining_hatyus)
+}
+
+
+async fn insert_into_card_input(hatyus: &Vec<Hatyu>) -> AppResult<()> {
+    if hatyus.is_empty() {
+        return Ok(());
+    }
+
+    let pool = create_sqlx_mysql_pool().await
+        .map_err(|_| AppError::InternalServer {
+            message: format!("failed to allocate pool"),
+        })?;
+
+    // 1回のINSERTのVALUES行数（大きすぎるとSQL長制限に当たる）
+    const CHUNK: usize = 500;
+
+    for chunk in hatyus.chunks(CHUNK) {
+        // chunk の行数ぶん "(?,?,?,?,?,?,?,?,?)" を並べる
+        let mut values_sql = String::new();
+        for i in 0..chunk.len() {
+            if i > 0 {
+                values_sql.push(',');
+            }
+
+            values_sql.push_str("(?,?,?,?,?, NULL, NULL, ?, ?, CURRENT_TIMESTAMP)");
+        }
+
+        let sql = format!(
+            r#"
+            INSERT INTO card_input (
+                order_no,
+                product_code,
+                product_name,
+                order_qty,
+                due_date,
+                unit_price,
+                order_date,
+                ship_remain,
+                cumulative_order_qty,
+                created_at
+            )
+            VALUES {values}
+            ON DUPLICATE KEY UPDATE
+                product_code = VALUES(product_code),
+                product_name = VALUES(product_name),
+                order_qty    = VALUES(order_qty),
+                due_date     = VALUES(due_date),
+                unit_price   = VALUES(unit_price),
+                order_date   = VALUES(order_date),
+                ship_remain  = VALUES(ship_remain),
+                cumulative_order_qty  = VALUES(cumulative_order_qty),
+                updated_at   = CURRENT_TIMESTAMP
+            "#,
+            values = values_sql
+        );
+
+        let mut mysql_query = sqlx::query::<MySql>(&sql);
+
+        for hatyu in chunk {
+            // ship_remain に何を入れるかは要件次第。
+            // ここでは「現時点では order_qty をそのまま ship_remain に入れる」例にしてる。
+            // もし remaining_shipping を計算済みにしたいなら Hatyu 側にフィールド追加するのが筋。
+            let ship_remain: i32 = i32::try_from(hatyu.order_qty.0)
+                .map_err(|_| AppError::BadRequest {
+                    message: format!("order_qty too large for i32: {}", hatyu.order_qty.0),
+                })?;
+
+            // unit_price, order_date, created_at の型はあなたの Hatyu 定義に合わせて bind してください。
+            // ここは “よくある型” を仮置きしています。
+            mysql_query = mysql_query
+                .bind(&hatyu.order_no.0)
+                .bind(&hatyu.product_code.0)
+                .bind(&hatyu.product_name.0)
+                .bind(i32::try_from(hatyu.order_qty.0).map_err(|_| AppError::BadRequest {
+                    message: format!("order_qty too large for i32: {}", hatyu.order_qty.0),
+                })?)
+                .bind(&hatyu.due_date)
+                .bind(ship_remain)
+                .bind(i32::try_from(hatyu.cumulative_order_qty.0).map_err(|_| AppError::BadRequest {
+                    message: format!("cumulative_order_qty too large for i32: {}", hatyu.order_qty.0),
+                })?);
+        }
+
+        mysql_query.execute(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+    }
+
+    Ok(())
+}
+
+
+fn compute_cumulative_order_qty(hatyus: &mut Vec<Hatyu>) {
+    // (product_code, due_date) -> suffix sum (due_date 以上の合計)
+    let mut product_code_due_date_suffix_sum: HashMap<(String, String), usize> = HashMap::new();
+
+    // 1) product_code ごとに (due_date, order_qty) を集める
+    let mut per_product: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+
+    for hatyu in hatyus.iter() {
+        let product_code = hatyu.product_code.0.clone();
+        let due_date_str = hatyu.due_date.format("%Y%m%d").to_string();
+
+        per_product.entry(product_code)
+            .or_default()
+            .push((due_date_str, hatyu.order_qty.0)
+        );
+    }
+
+    // 2) 各 product_code について due_date 昇順に並べ、後ろから累積（suffix sum）を作る
+    for (product_code, mut v) in per_product {
+        v.sort_by(|a, b| a.0.cmp(&b.0)); // yyyy-MM-dd なので文字列比較でOK
+
+        let mut acc: usize = 0;
+        for (due_date, qty) in v.into_iter().rev() {
+            acc += qty; // due_date 以上の合計になっていく
+            product_code_due_date_suffix_sum.insert((product_code.clone(), due_date), acc);
+        }
+    }
+
+    // 3) rows に列追加：その行の due_date 以上の合計
+    for hatyu in hatyus.iter_mut() {
+        let product_code = hatyu.product_code.0.clone();
+        let due_date_str = hatyu.due_date.format("%Y%m%d").to_string();
+
+        let suffix_sum = product_code_due_date_suffix_sum
+            .get(&(product_code, due_date_str))
+            .copied()
+            .unwrap_or(0);
+
+        hatyu.cumulative_order_qty = OrderQuantity(suffix_sum);
+    }
+}
+
 
 #[command]
 pub async fn insert_hatyu_into_card_input(
@@ -149,57 +385,34 @@ pub async fn insert_hatyu_into_card_input(
     limit: usize
 ) -> AppResult<FetchResult> {
     run_blocking_async(move || async move {
-        let pool = create_sqlx_mysql_pool().await
-            .expect("invalid mysql pool");
+        let mut context = get_sql_context();
+        
+        create_mysql_conn(
+            &mut context,
+            vec![
+                "shipment_history".to_string(),
+                "hatyu".to_string(),
+                "card_input".to_string()
+            ],
+            vec![
+                "shipment_history".to_string(),
+                "hatyu".to_string(),
+                "card_input".to_string()
+            ]
+        ).await?;
 
         let start = Utc::now();
 
-        let sql = r#"
-            INSERT INTO card_input (
-                order_id,
-                product_code,
-                order_qty,
-                due_date,
-                provisional_issued,
-                shipped_flg,
-                order_date,
-                created_at
-            )
-            SELECT
-                h.order_no                               AS order_id,
-                h.product_code                           AS product_code,
+        // 出荷済履歴クエリ
+        let order_no_quantity_sum_map: HashMap<OrderNo, QuantitySum> =
+            shipment_history_query(&mut context).await?;
 
-                /* 出荷残 = 発注数 - 出荷済数量合計 */
-                (h.order_qty - IFNULL(s.shipped_qty, 0)) AS order_qty,
+        let hatyus = fetch_hatyu(
+            &mut context,
+            &order_no_quantity_sum_map
+        ).await?;
 
-                h.due_date                               AS due_date,
-                FALSE                                    AS provisional_issued,
-                FALSE                                    AS shipped_flg,
-                h.order_created_date                     AS order_date,
-                CURRENT_TIMESTAMP                        AS created_at
-            FROM hatyu h
-            LEFT JOIN (
-                SELECT
-                    sh.order_no,
-                    SUM(sh.qty) AS shipped_qty
-                FROM shipment_history sh
-                GROUP BY sh.order_no
-            ) s
-                ON s.order_no = h.order_no
-            WHERE
-                /* 未完了（出荷残がある）注文のみカード化 */
-                (h.order_qty - IFNULL(s.shipped_qty, 0)) > 0
-            ON DUPLICATE KEY UPDATE
-                product_code       = VALUES(product_code),
-                order_qty          = VALUES(order_qty),
-                due_date           = VALUES(due_date),
-                provisional_issued = VALUES(provisional_issued),
-                shipped_flg        = VALUES(shipped_flg),
-                order_date         = VALUES(order_date),
-                created_at         = VALUES(created_at);
-        "#.to_string();
-
-        execute_sql(&pool, &sql).await?;
+        insert_into_card_input(&hatyus).await?;
 
         Ok(FetchResult {
             header: Vec::new(),
@@ -230,85 +443,172 @@ pub async fn fetch_card_input(
         let sql = r#"
             SELECT
                 *
-            FROM card_input c
-            WHERE c.shipped_flg = 0;
-        "#.to_string();
-
-        let future_order_cumulative_sql = r#"
-            SELECT
-                product_code,
-                due_date,
-                order_qty
-            FROM card_input c
-            WHERE c.shipped_flg = 0
-            ORDER BY due_date;
+            FROM card_input;
         "#.to_string();
 
         let (mut header, mut rows) = fetch_sql(&mut context, &sql).await?;
-        let (_, rows_cumulative) = fetch_sql(&mut context, &future_order_cumulative_sql).await?;
         
-        // (product_code, due_date) -> suffix sum (due_date 以上の合計)
-        let mut product_code_due_date_suffix_sum: HashMap<(String, String), i32> = HashMap::new();
-
-        // 1) product_code ごとに (due_date, order_qty) を集める
-        let mut per_product: HashMap<String, Vec<(String, i32)>> = HashMap::new();
-
-        for row in rows_cumulative {
-            let product_code: String = row
-                .get(0)
-                .expect("invalid product_code")
-                .clone();
-
-            let due_date: String = row
-                .get(1)
-                .expect("invalid due_date")
-                .clone();
-
-            let order_qty: i32 = row
-                .get(2)
-                .expect("invalid order_qty")
-                .parse()
-                .expect("order_qty is not i32");
-
-            per_product.entry(product_code).or_default().push((due_date, order_qty));
-        }
-
-        // 2) 各 product_code について due_date 昇順に並べ、後ろから累積（suffix sum）を作る
-        for (product_code, mut v) in per_product {
-            v.sort_by(|a, b| a.0.cmp(&b.0)); // yyyy-MM-dd なので文字列比較でOK
-
-            let mut acc: i32 = 0;
-            for (due_date, qty) in v.into_iter().rev() {
-                acc += qty; // due_date 以上の合計になっていく
-                product_code_due_date_suffix_sum.insert((product_code.clone(), due_date), acc);
-            }
-        }
-
-        // 3) rows に列追加：その行の due_date 以上の合計
-        for row in &mut rows {
-            let product_code: String = row
-                .get(1)
-                .expect("invalid product_code")
-                .clone();
-
-            let due_date: String = row
-                .get(3)
-                .expect("invalid due_date")
-                .clone();
-
-            let suffix_sum = product_code_due_date_suffix_sum
-                .get(&(product_code.clone(), due_date.clone()))
-                .copied()
-                .unwrap_or(0);
-
-            row.push(suffix_sum.to_string());
-        }
-
-        header.push("cumulative_order_qty".to_string());
-
         Ok(FetchResult {
             header,
             rows,
+            query_time: time_difference_from_now(start),
+        })
+    }).await
+}
+
+
+#[command]
+pub async fn ship_by_product_code(
+    app: AppHandle,
+    product_code: String,
+    ship_quantity: i32,
+    ship_date: String,
+    sql: String,
+    offset: usize,
+    limit: usize
+) -> AppResult<FetchResult> {
+    run_blocking_async(move || async move {
+        let start = Utc::now();
+
+        let pool = create_sqlx_mysql_pool()
+            .await
+            .map_err(|_| AppError::InternalServer {
+                message: format!("failed to allocate pool"),
+            })?;
+
+        let hatyu_validation_sql = r#"
+            SELECT
+                *
+            FROM card_input ci
+            WHERE ci.product_code = ? AND
+                ci.ship_remain - ? >= 0
+        "#;
+
+        let mut hatyu_validation_query = sqlx::query::<MySql>(&hatyu_validation_sql);
+
+        hatyu_validation_query = hatyu_validation_query
+            .bind(product_code.clone())
+            .bind(ship_quantity.clone());
+            
+        let mysqlResult = hatyu_validation_query.fetch_all(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+
+        if mysqlResult.len() == 0 {
+            return Err(AppError::BadRequest {
+                message: format!("出庫数が在庫数を上回っています: 出庫数: {ship_quantity}"),
+            });
+        }
+
+        let shipment_history_sql = r#"
+            INSERT INTO shipment_history (
+                product_code,
+                shipped_qty,
+                issue_date,
+                created_at
+            )
+            VALUES (?, ?, ?, now())
+        "#;
+
+        let hatyu_update_sql = r#"
+            UPDATE card_input ci
+            SET ci.ship_remain = GREATEST(ci.ship_remain - ?, 0)
+            WHERE ci.product_code = ?
+        "#;
+
+        let mut shipment_history_query = sqlx::query::<MySql>(&shipment_history_sql);
+
+        shipment_history_query = shipment_history_query
+            .bind(product_code.clone())
+            .bind(ship_quantity.clone())
+            .bind(ship_date.clone());
+            
+        shipment_history_query.execute(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+
+        let mut hatyu_update_query = sqlx::query::<MySql>(&hatyu_update_sql);
+
+        hatyu_update_query = hatyu_update_query
+            .bind(ship_quantity.clone())
+            .bind(product_code.clone());
+            
+        hatyu_update_query.execute(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+
+        Ok(FetchResult {
+            header: Vec::new(),
+            rows: Vec::new(),
+            query_time: time_difference_from_now(start),
+        })
+    }).await
+}
+
+#[command]
+pub async fn ship_by_order_no(
+    app: AppHandle,
+    order_no: i64,
+    ship_quantity: i32,
+    ship_date: String,
+    sql: String,
+    offset: usize,
+    limit: usize
+) -> AppResult<FetchResult> {
+    run_blocking_async(move || async move {
+        let start = Utc::now();
+
+        let pool = create_sqlx_mysql_pool()
+            .await
+            .map_err(|_| AppError::InternalServer {
+                message: format!("failed to allocate pool"),
+            })?;
+
+        let shipment_history_sql = r#"
+            INSERT INTO shipment_history (
+                order_no,
+                shipped_qty,
+                issue_date,
+                created_at
+            )
+            VALUES (?, ?, ?, now())
+        "#;
+
+        let hatyu_update_sql = r#"
+            UPDATE card_input ci
+            SET ci.ship_remain = GREATEST(ci.ship_remain - ?, 0)
+            WHERE ci.order_no = ?
+        "#;
+
+        let mut shipment_history_query = sqlx::query::<MySql>(&shipment_history_sql);
+
+        shipment_history_query = shipment_history_query
+            .bind(order_no)
+            .bind(ship_quantity)
+            .bind(ship_date);
+            
+        shipment_history_query.execute(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+
+        let mut hatyu_update_query = sqlx::query::<MySql>(&hatyu_update_sql);
+
+        hatyu_update_query = hatyu_update_query
+            .bind(ship_quantity.clone())
+            .bind(order_no.clone());
+            
+        hatyu_update_query.execute(&pool).await
+            .map_err(|e| AppError::BadRequest {
+                message: format!("insert card_input failed: {e}"),
+            })?;
+
+        Ok(FetchResult {
+            header: Vec::new(),
+            rows: Vec::new(),
             query_time: time_difference_from_now(start),
         })
     }).await
