@@ -54,8 +54,8 @@ jobs:
         with:
           name: easydb-${{ matrix.platform }}
           path: |
-            src-tauri/target/${{ matrix.target }}/release/**/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/**/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
           retention-days: 30
 
   create-release:
